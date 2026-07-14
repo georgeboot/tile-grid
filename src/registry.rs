@@ -55,14 +55,15 @@ impl TileMatrixSets {
         overwrite: bool,
     ) -> Result<(), RegistryError> {
         for tms in custom_tms {
-            if self.coll.contains_key(&tms.id) {
+            let key = tms.id.to_string();
+            if self.coll.contains_key(&key) {
                 if overwrite {
-                    self.coll.insert(tms.id.clone(), tms);
+                    self.coll.insert(key, tms);
                 } else {
-                    return Err(RegistryError::TmsAlreadyRegistered(tms.id));
+                    return Err(RegistryError::TmsAlreadyRegistered(key));
                 }
             } else {
-                self.coll.insert(tms.id.clone(), tms);
+                self.coll.insert(key, tms);
             }
         }
         Ok(())

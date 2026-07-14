@@ -1,4 +1,4 @@
-use ogcapi_types::tiles::{OrderedAxes, TileMatrixSet};
+use ogcapi_types::tiles::TileMatrixSet;
 use std::path::PathBuf;
 
 #[derive(thiserror::Error, Debug)]
@@ -27,16 +27,15 @@ impl TileMatrixSetOps for TileMatrixSet {
     }
     /// Check if CRS has inverted AXIS (lat,lon) instead of (lon,lat).
     fn crs_axis_inverted(&self) -> bool {
-        if let Some(axes) = &self.ordered_axes {
-            ordered_axes_inverted(axes)
-        } else {
-            false // TODO: Check CRS axis ordering
-        }
+        // TODO: Check CRS axis ordering when no explicit ordered_axes are given.
+        ordered_axes_inverted(&self.ordered_axes)
     }
 }
 
-pub(crate) fn ordered_axes_inverted(axes: &OrderedAxes) -> bool {
-    first_axes_inverted(&axes[0].to_uppercase())
+pub(crate) fn ordered_axes_inverted(axes: &[String]) -> bool {
+    axes.first()
+        .map(|first| first_axes_inverted(&first.to_uppercase()))
+        .unwrap_or(false)
 }
 
 fn first_axes_inverted(first: &str) -> bool {

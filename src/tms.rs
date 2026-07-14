@@ -5,7 +5,7 @@ use crate::tms_iterator::XyzIterator;
 use crate::transform::{merc_tile_ul, Error::TransformationUnsupported, Transform, Transformer};
 use ogcapi_types::common::Crs;
 use ogcapi_types::tiles::{
-    BoundingBox2D, CornerOfOrigin, OrderedAxes, TileMatrix, TileMatrixSet, TitleDescriptionKeywords,
+    BoundingBox2D, CornerOfOrigin, TileMatrix, TileMatrixSet, TileMatrixSetId, TilesCrs,
 };
 use std::convert::AsRef;
 use std::f64::consts::PI;
@@ -80,17 +80,18 @@ impl Tms {
     /// Prepare transformations and check if TileMatrixSet supports quadkeys.
     pub(crate) fn init(data: &TileMatrixSet) -> Result<Self> {
         let is_quadtree = check_quadkey_support(&data.tile_matrices);
-        let data_crs = data.crs.clone();
-        let geographic_crs = Crs::default(); // data.get("_geographic_crs", WGS84_CRS)
+        let data_crs = crs_from_tiles(&data.crs);
+        let geographic_crs = Crs::default2d(); // data.get("_geographic_crs", WGS84_CRS)
         let to_geographic = Transformer::from_crs(&data_crs, &geographic_crs, true).ok();
         let from_geographic = Transformer::from_crs(&geographic_crs, &data_crs, true).ok();
         let mut tms = data.clone();
         Self::sort_tile_matrices(&mut tms)?;
         // Check bounding box CRS (TODO: should we store it?)
         if let Some(bounding_box) = &tms.bounding_box {
-            if let Some(crs) = &bounding_box.crs {
-                if *crs != tms.crs {
-                    let _transform = Transformer::from_crs(crs, &tms.crs, true)?;
+            if let Some(bbox_crs) = &bounding_box.crs {
+                let bbox_crs = crs_from_tiles(bbox_crs);
+                if bbox_crs != data_crs {
+                    let _transform = Transformer::from_crs(&bbox_crs, &data_crs, true)?;
                 }
             }
         }
@@ -126,7 +127,7 @@ impl Tms {
 
     /// Fetch CRS from epsg
     pub fn crs(&self) -> &Crs {
-        &self.tms.crs
+        &self.data_crs
     }
 
     /// TileMatrixSet minimum TileMatrix identifier
@@ -177,7 +178,7 @@ impl Tms {
         maxzoom: u8,                   // = 24,
         title: &str,                   // = "Custom TileMatrixSet",
         id: &str,                      // = "Custom",
-        ordered_axes: Option<OrderedAxes>,
+        ordered_axes: Option<Vec<String>>,
         geographic_crs: &Crs, // = WGS84_CRS,
     ) -> Result<Self> {
         let matrix_scale = matrix_scale.unwrap_or(vec![1, 1]);
@@ -221,19 +222,17 @@ impl Tms {
         resolutions: Vec<f64>,
         title: &str,
         id: &str,
-        ordered_axes: Option<OrderedAxes>,
+        ordered_axes: Option<Vec<String>>,
         geographic_crs: &Crs,
     ) -> Result<Self> {
         let mut tms = TileMatrixSet {
-            title_description_keywords: TitleDescriptionKeywords {
-                title: Some(title.to_string()),
-                description: None,
-                keywords: None,
-            },
-            id: id.to_string(),
+            title: Some(title.to_string()),
+            description: None,
+            keywords: Vec::new(),
+            id: tms_id_from_str(id),
             uri: None,
-            crs: crs.clone(),
-            ordered_axes: ordered_axes.clone(),
+            crs: TilesCrs::Simple(crs.clone()),
+            ordered_axes: ordered_axes.clone().unwrap_or_default(),
             well_known_scale_set: None,
             bounding_box: None,
             tile_matrices: Vec::with_capacity(resolutions.len()),
@@ -245,17 +244,21 @@ impl Tms {
             tms.crs_axis_inverted()
         };
 
+        let bbox_crs = Some(TilesCrs::Simple(extent_crs.unwrap_or(crs).clone()));
+        let bbox_axes: Option<[String; 2]> = ordered_axes
+            .as_ref()
+            .and_then(|axes| <[String; 2]>::try_from(axes.clone()).ok());
         tms.bounding_box = Some(if is_inverted {
             BoundingBox2D {
-                crs: Some(extent_crs.unwrap_or(crs).clone()),
-                ordered_axes: ordered_axes.clone(),
+                crs: bbox_crs,
+                ordered_axes: bbox_axes,
                 lower_left: [extent[1], extent[0]],
                 upper_right: [extent[3], extent[2]],
             }
         } else {
             BoundingBox2D {
-                crs: Some(extent_crs.unwrap_or(crs).clone()),
-                ordered_axes: ordered_axes.clone(),
+                crs: bbox_crs,
+                ordered_axes: bbox_axes,
                 lower_left: [extent[0], extent[1]],
                 upper_right: [extent[2], extent[3]],
             }
@@ -266,9 +269,9 @@ impl Tms {
         let x_origin = if !is_inverted { bbox.left } else { bbox.top };
         let y_origin = if !is_inverted { bbox.top } else { bbox.left };
         let corner_of_origin = if !is_inverted {
-            None
+            CornerOfOrigin::TopLeft
         } else {
-            Some(CornerOfOrigin::BottomLeft)
+            CornerOfOrigin::BottomLeft
         };
 
         let mpu = meters_per_unit(crs);
@@ -278,11 +281,9 @@ impl Tms {
             let maxy = ((bbox.top - bbox.bottom - 0.01 * unitheight) / unitheight).ceil() as u64;
             let maxx = ((bbox.right - bbox.left - 0.01 * unitwidth) / unitwidth).ceil() as u64;
             tms.tile_matrices.push(TileMatrix {
-                title_description_keywords: TitleDescriptionKeywords {
-                    title: None,
-                    description: None,
-                    keywords: None,
-                },
+                title: None,
+                description: None,
+                keywords: Vec::new(),
                 id: zoom.to_string(),
                 scale_denominator: res * mpu / 0.00028,
                 cell_size: *res,
@@ -292,7 +293,7 @@ impl Tms {
                 tile_height: NonZeroU16::new(tile_height).ok_or(TmsError::NonZeroError)?,
                 matrix_width: NonZeroU64::new(maxx).ok_or(TmsError::NonZeroError)?,
                 matrix_height: NonZeroU64::new(maxy).ok_or(TmsError::NonZeroError)?,
-                variable_matrix_widths: None,
+                variable_matrix_widths: Vec::new(),
             });
         }
 
@@ -334,11 +335,9 @@ impl Tms {
         let factor = 1.0 / matrix_scale[0];
         while tile_matrix.id != zoom.to_string() {
             tile_matrix = TileMatrix {
-                title_description_keywords: TitleDescriptionKeywords {
-                    title: None,
-                    description: None,
-                    keywords: None,
-                },
+                title: None,
+                description: None,
+                keywords: Vec::new(),
                 id: (tile_matrix.id.parse::<u8>().unwrap() + 1).to_string(),
                 scale_denominator: tile_matrix.scale_denominator / factor,
                 cell_size: tile_matrix.cell_size, // FIXME
@@ -354,7 +353,7 @@ impl Tms {
                     (u64::from(tile_matrix.matrix_height) as f64 * factor).round() as u64,
                 )
                 .unwrap(),
-                variable_matrix_widths: None,
+                variable_matrix_widths: Vec::new(),
             }
         }
 
@@ -632,11 +631,12 @@ impl Tms {
             } else {
                 (&bounding_box.upper_right[0], &bounding_box.upper_right[1])
             };
-            if let Some(crs) = &bounding_box.crs {
-                if crs != self.crs() {
+            if let Some(bbox_crs) = &bounding_box.crs {
+                let bbox_crs = crs_from_tiles(bbox_crs);
+                if &bbox_crs != self.crs() {
                     // Verified in init function
                     let transform =
-                        Transformer::from_crs(crs, self.crs(), true).expect("Transformer");
+                        Transformer::from_crs(&bbox_crs, self.crs(), true).expect("Transformer");
                     let (left, bottom, right, top) = transform
                         .transform_bounds(*left, *bottom, *right, *top /* , Some(21) */)
                         .expect("Transformer");
@@ -1096,6 +1096,25 @@ fn transformed_bbox(extent: &[f64], crs: &Crs, extent_crs: Option<&Crs>) -> Resu
 //     If the CRS uses meters as units of measure for the horizontal dimensions,
 //     then metersPerUnit=1; if it has degrees, then metersPerUnit=2pa/360
 //     (a is the Earth maximum radius of the ellipsoid).
+/// Extract a plain [`Crs`] from a tiles [`TilesCrs`] for transformation and comparison.
+fn crs_from_tiles(crs: &TilesCrs) -> Crs {
+    match crs {
+        TilesCrs::Simple(crs) => crs.clone(),
+        TilesCrs::Uri { uri } => uri.parse().unwrap_or_else(|_| Crs::default2d()),
+        _ => Crs::default2d(),
+    }
+}
+
+/// Build a [`TileMatrixSetId`] from a string identifier, using the well-known variant
+/// where it matches and `Custom` otherwise.
+fn tms_id_from_str(id: &str) -> TileMatrixSetId {
+    if id == "WebMercatorQuad" {
+        TileMatrixSetId::WebMercatorQuad
+    } else {
+        TileMatrixSetId::Custom(id.to_string())
+    }
+}
+
 pub fn meters_per_unit(crs: &Crs) -> f64 {
     const SEMI_MAJOR_METRE: f64 = 6378137.0; /* crs.ellipsoid.semi_major_metre */
     let unit_name = if crs.as_srid() == 4326 {
