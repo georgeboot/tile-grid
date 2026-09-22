@@ -17,7 +17,7 @@ projtransform = ["proj"]
 
 [dependencies]
 chrono = { version = "0.4.24", features = ["serde"] }
-ogcapi-types = { git = "https://github.com/georgeboot/ogcapi", rev = "c3854ccbab640d05321df855dd8582cb92e7387d", default-features = false, features = ["tiles"] }
+ogcapi-types = { git = "https://github.com/georgeboot/ogcapi", rev = "52f622ebe02cb42bb7b25c0342bbacc920b91be6", default-features = false, features = ["tiles"] }
 once_cell = "1.17.1"
 proj = { version = "=0.27.0", default-features = false, optional = true }
 serde = { version = "1.0.160", features = ["derive"] }
